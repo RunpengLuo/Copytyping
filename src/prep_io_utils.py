@@ -55,13 +55,17 @@ def get_cnp_mask(A, B, C, BAF, and_mask=None):
     )  # not purely normal cell
     ai_mask = np.any(BAF != 0.5, axis=1)  # at least one clone is allelic imbalanced
     clonal_loh_mask = np.all(B[:, 1:] == 0, axis=1) & np.all(A[:, 1:] > 0, axis=1)
-
+    subclonal_mask = np.copy(tumor_mask)
+    if A.shape[1] > 2:
+        subclonal_mask = np.any(A[:, 2:] != A[:, 1][:, None], axis=1) | np.any(B[:, 2:] != B[:, 1][:, None], axis=1)
     if not and_mask is None:
         tumor_mask &= and_mask
         clonal_loh_mask &= and_mask
         ai_mask &= and_mask
+        subclonal_mask &= and_mask
     return {"CNP": tumor_mask, 
             "IMBALANCED": ai_mask,
+            "SUBCLONAL": subclonal_mask,
             "CLONAL_LOH": clonal_loh_mask}
 
 

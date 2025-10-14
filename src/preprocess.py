@@ -20,9 +20,13 @@ if __name__ == "__main__":
 
     min_allele_counts_rna = 1500
     min_total_counts_rna = 3000
+    min_total_thres_rna = 200
+    min_allele_thres_rna = 10
 
     min_allele_counts_atac = 2500
     min_total_counts_atac = 5000
+    min_total_thres_atac = 200
+    min_allele_thres_atac = 20
 
     min_allele_counts_visium = 5000
     min_total_counts_visium = 5000
@@ -102,7 +106,12 @@ if __name__ == "__main__":
             args["cellsnp_dir_1"], snp_info, barcodes
         )
         rna_adata, rna_cell_snps, rna_super_features = consolidate_snp_feature(
-            rna_adata, rna_cell_snps, haplo_blocks, tmp_dir, "GEX", feature_may_overlap=True
+            rna_adata,
+            rna_cell_snps,
+            haplo_blocks,
+            tmp_dir,
+            "GEX",
+            feature_may_overlap=True,
         )
 
         rna_super_features = stat_pseudobulk(
@@ -116,6 +125,8 @@ if __name__ == "__main__":
             haplo_blocks,
             min_allele_counts_rna,
             min_total_counts_rna,
+            min_total_thres_rna,
+            min_allele_thres_rna,
         )
 
         aggregate_allele_counts(
@@ -132,7 +143,18 @@ if __name__ == "__main__":
 
         rna_bins.to_csv(
             os.path.join(gex_dir, "bin_information.tsv"),
-            columns=["BIN_ID", "#CHR", "START", "END", "HB", "CNP", "#VAR", "VAR_DP", "ALLELE_DP", "B_ALLELE_DP"],
+            columns=[
+                "BIN_ID",
+                "#CHR",
+                "START",
+                "END",
+                "HB",
+                "CNP",
+                "#VAR",
+                "VAR_DP",
+                "ALLELE_DP",
+                "B_ALLELE_DP",
+            ],
             sep="\t",
             header=True,
             index=False,
@@ -150,8 +172,12 @@ if __name__ == "__main__":
             args["cellsnp_dir_2"], snp_info, barcodes
         )
         atac_adata, atac_cell_snps, atac_super_features = consolidate_snp_feature(
-            atac_adata, atac_cell_snps, haplo_blocks, tmp_dir, "ATAC", 
-            feature_may_overlap=False
+            atac_adata,
+            atac_cell_snps,
+            haplo_blocks,
+            tmp_dir,
+            "ATAC",
+            feature_may_overlap=False,
         )
 
         atac_super_features = stat_pseudobulk(
@@ -165,6 +191,8 @@ if __name__ == "__main__":
             haplo_blocks,
             min_allele_counts_atac,
             min_total_counts_atac,
+            min_total_thres_atac,
+            min_allele_thres_atac,
         )
 
         aggregate_allele_counts(
@@ -181,7 +209,18 @@ if __name__ == "__main__":
 
         atac_bins.to_csv(
             os.path.join(atac_dir, "bin_information.tsv"),
-            columns=["BIN_ID", "#CHR", "START", "END", "HB", "CNP", "#VAR", "VAR_DP", "ALLELE_DP", "B_ALLELE_DP"],
+            columns=[
+                "BIN_ID",
+                "#CHR",
+                "START",
+                "END",
+                "HB",
+                "CNP",
+                "#VAR",
+                "VAR_DP",
+                "ALLELE_DP",
+                "B_ALLELE_DP",
+            ],
             sep="\t",
             header=True,
             index=False,

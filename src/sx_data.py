@@ -17,7 +17,8 @@ class SX_Data:
 
         self.bin_info = load_bin_information(mod_dir, data_type)
         self.ncols = self.num_barcodes = nbarcodes
-        self.nrows = self.num_bins = len(self.bin_info) 
+        self.nrows = self.num_bins = len(self.bin_info)
+        print(f"{data_type} matrix shape={self.nrows, self.ncols}")
 
         clones, cnp_id2state, A, B, C, BAF = parse_cnp(self.bin_info, laplace=0.01)
         self.clones = clones
@@ -34,22 +35,22 @@ class SX_Data:
 
         self.cnp_groups = self.get_cnp_shared_ids(apply_cnp_mask=True, mask_id="CNP")
         print(f"#effective unique CNA states={len(self.cnp_groups)}")
-        print(cnp_id2state)
+        print(cnp_id2state.items())
 
         a_allele_mat, b_allele_mat, t_allele_mat, snp_count_mat = load_allele_input(
             mod_dir, data_type
         )
-        assert a_allele_mat.shape == (self.num_bins, self.num_barcodes)
-        assert b_allele_mat.shape == (self.num_bins, self.num_barcodes)
-        assert t_allele_mat.shape == (self.num_bins, self.num_barcodes)
-        assert snp_count_mat.shape == (self.num_bins, self.num_barcodes)
+        assert a_allele_mat.shape == (self.nrows, self.ncols), a_allele_mat.shape
+        assert b_allele_mat.shape == (self.nrows, self.ncols), b_allele_mat.shape
+        assert t_allele_mat.shape == (self.nrows, self.ncols), t_allele_mat.shape
+        assert snp_count_mat.shape == (self.nrows, self.ncols), snp_count_mat.shape
         self.X = a_allele_mat
         self.Y = b_allele_mat
         self.D = t_allele_mat
         # self.snp_count_mat = snp_count_mat
 
         count_mat = load_count_input(mod_dir, data_type)
-        assert count_mat.shape == (self.num_bins, self.num_barcodes)
+        assert count_mat.shape == (self.nrows, self.ncols), count_mat.shape
         self.T = count_mat
         self.Tn = np.sum(count_mat, axis=0)
         print(f"{data_type} data is loaded")
@@ -68,6 +69,20 @@ class SX_Data:
             "T": self.T[cnp_mask, :],
         }
         return M
+    
+    def subset_matrix(self, cnp_ids: np.ndarray):
+        M = {
+            "A": self.A[cnp_ids, :],
+            "B": self.B[cnp_ids, :],
+            "C": self.C[cnp_ids, :],
+            "BAF": self.BAF[cnp_ids, :],
+            "X": self.X[cnp_ids, :],
+            "Y": self.Y[cnp_ids, :],
+            "D": self.D[cnp_ids, :],
+            "T": self.T[cnp_ids, :],
+        }
+        return M
+
 
     def get_cnp_shared_ids(self, apply_cnp_mask=True, mask_id="CNP"):
         """per CNP group, get bins index"""

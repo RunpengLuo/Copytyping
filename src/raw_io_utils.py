@@ -254,6 +254,7 @@ def load_calicost_prep_data(calicost_prep_dir: str):
     # TODO
     return
 
+
 ##################################################
 def consolidate_snp_feature(
     adata: AnnData,
@@ -261,7 +262,7 @@ def consolidate_snp_feature(
     haplo_blocks: pd.DataFrame,
     tmp_dir: str,
     modality: str,
-    feature_may_overlap=True
+    feature_may_overlap=True,
 ):
     print(f"consolidate SNPs with features for {modality}")
 
@@ -290,11 +291,15 @@ def consolidate_snp_feature(
             usecols=list(range(5)),
             names=["#CHR", "START", "END", "unique_index", "SUPER_VAR_IDX"],
         )
-        adata.var = adata.var.reset_index(drop=False).merge(
-            right=var_df_clustered[["unique_index", "SUPER_VAR_IDX"]],
-            on="unique_index",
-            how="left",
-        ).set_index("index")
+        adata.var = (
+            adata.var.reset_index(drop=False)
+            .merge(
+                right=var_df_clustered[["unique_index", "SUPER_VAR_IDX"]],
+                on="unique_index",
+                how="left",
+            )
+            .set_index("index")
+        )
     else:
         adata.var["SUPER_VAR_IDX"] = adata.var["unique_index"]
 
@@ -323,11 +328,15 @@ def consolidate_snp_feature(
     var_super_df["HB"] = var_super_df["HB"].astype(np.int32)
 
     # map HB tag to adata.var, filter any features accordingly
-    adata.var = adata.var.reset_index(drop=False).merge(
-        right=var_super_df[["SUPER_VAR_IDX", "HB"]],
-        on="SUPER_VAR_IDX",
-        how="left",
-    ).set_index("index")
+    adata.var = (
+        adata.var.reset_index(drop=False)
+        .merge(
+            right=var_super_df[["SUPER_VAR_IDX", "HB"]],
+            on="SUPER_VAR_IDX",
+            how="left",
+        )
+        .set_index("index")
+    )
 
     adata = adata[:, adata.var["HB"].notna()].copy()
     adata.var["HB"] = adata.var["HB"].astype(np.int32)
@@ -396,6 +405,8 @@ def co_binning_allele_feature(
     haplo_blocks: pd.DataFrame,
     min_allele_counts: int,
     min_total_counts: int,
+    min_total_threshold: int,
+    min_allele_threshold: int,
 ):
     print(
         f"adaptive co-binning over features with min_allele_counts={min_allele_counts} and min_total_counts={min_total_counts}"
@@ -430,26 +441,59 @@ def co_binning_allele_feature(
     ).reset_index(drop=False)
     var_bins.loc[:, "#VAR"] = var_super_bins.size().reset_index(drop=True)
     var_bins.loc[:, "BLOCKSIZE"] = var_bins["END"] - var_bins["START"]
-    print(f"#bins={len(var_bins)}")
 
+    ##################################################
+    # filter bins that has total pseudobulk count below <min_total_threshold>
+    num_bins_raw = len(var_bins)
+    var_bins = var_bins.loc[
+        (var_bins["VAR_DP"] >= min_total_threshold)
+        & (var_bins["ALLELE_DP"] >= min_allele_threshold),
+        :,
+    ].reset_index(drop=True)
+    var_super_df = var_super_df.loc[
+        var_super_df["BIN_ID"].isin(var_bins["BIN_ID"]), :
+    ].copy(deep=True)
+    var_super_df["BIN_ID"] = pd.factorize(var_super_df["BIN_ID"])[0]  # reset bin index
+
+    num_bins = len(var_bins)
+    var_bins["BIN_ID"] = np.arange(num_bins)  # reset bin index
+    print(f"#valid bins={num_bins}/{num_bins_raw}={num_bins / num_bins_raw:.3%}")
+
+    adata.var = (
+        adata.var.reset_index(drop=False)
+        .merge(
+            right=var_super_df[["SUPER_VAR_IDX", "BIN_ID"]],
+            on="SUPER_VAR_IDX",
+            how="left",
+            sort=False,
+        )
+        .set_index("index")
+    )
+    adata = adata[:, adata.var["BIN_ID"].notna()].copy()
+    adata.var["BIN_ID"] = adata.var["BIN_ID"].astype(int)
+
+    cell_snps = (
+        cell_snps.reset_index(drop=False)
+        .merge(
+            right=var_super_df[["SUPER_VAR_IDX", "BIN_ID"]],
+            on="SUPER_VAR_IDX",
+            how="left",
+            sort=False,
+        )
+        .set_index("index")
+    )
+    cell_snps = cell_snps.loc[cell_snps["BIN_ID"].notna(), :].copy(deep=True)
+    cell_snps["BIN_ID"] = cell_snps["BIN_ID"].astype(int)
+
+    ##################################################
     # append copy-number profile to bins
-    var_bins = pd.merge(
-        left=var_bins, right=haplo_blocks[["HB", "CNP"]], on=["HB"], how="left"
+    var_bins = (
+        var_bins.reset_index(drop=False)
+        .merge(right=haplo_blocks[["HB", "CNP"]], on=["HB"], how="left", sort=False)
+        .set_index("index")
     )
     assert var_bins["CNP"].notna().all(), "corrupted data"
 
-    adata.var = pd.merge(
-        left=adata.var,
-        right=var_super_df[["SUPER_VAR_IDX", "BIN_ID"]],
-        on="SUPER_VAR_IDX",
-        how="left",
-    )
-    cell_snps = pd.merge(
-        left=cell_snps,
-        right=var_super_df[["SUPER_VAR_IDX", "BIN_ID"]],
-        on="SUPER_VAR_IDX",
-        how="left",
-    )
     return adata, cell_snps, var_bins
 
 
@@ -527,15 +571,14 @@ def aggregate_var_counts(
     n_bins = len(var_bins)
     feat_bin = adata.var["BIN_ID"].to_numpy()
     indicator_matrix = sparse.csr_matrix(
-        (np.ones_like(feat_bin, dtype=np.int8),
-        (np.arange(n_feats), feat_bin)),
-        shape=(n_feats, n_bins)
+        (np.ones_like(feat_bin, dtype=np.int8), (np.arange(n_feats), feat_bin)),
+        shape=(n_feats, n_bins),
     )
     X = adata.X
     if not sparse.issparse(X):
         X = sparse.csr_matrix(X)
 
-    bin_count_mat = X @ indicator_matrix    # shape: (n_cells × n_bins)
+    bin_count_mat = X @ indicator_matrix  # shape: (n_cells × n_bins)
     bin_count_mat = bin_count_mat.T.tocsr()  # to (n_bins × n_cells) for consistency
 
     bin_count_file = os.path.join(out_dir, f"count.npz")

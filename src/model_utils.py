@@ -12,11 +12,16 @@ from statsmodels.distributions.empirical_distribution import ECDF
 
 
 ##################################################
-def compute_baseline_proportions(T: np.ndarray, normal_labels: np.ndarray):
+def compute_baseline_proportions(T: np.ndarray, normal_labels: np.ndarray, eps=1e-6):
     # note that T here is full size, includes all bins.
     T_normal = T[:, normal_labels]
-    base_raw = np.sum(T_normal, axis=1)
-    base_props = base_raw / np.sum(base_raw)
+
+    sparsity = np.mean(T_normal == 0)
+    print(f"Sparsity: {sparsity:.3%}")
+
+    T_normal = T[:, normal_labels]
+    base_raw = np.mean(T_normal, axis=1)
+    base_props = (base_raw + eps) / np.sum(base_raw + eps)
     return base_props
 
 

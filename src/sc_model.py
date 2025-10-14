@@ -11,8 +11,6 @@ from model_utils import *
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-
-global_barcodes = None
 ##################################################
 class SC_Model:
     """Single-cell EM model, no spatial information, tumor purity=1 for each cell."""
@@ -28,20 +26,17 @@ class SC_Model:
         else:
             self.data_types = [modality]
         self.data_sources = {}
+        num_clones = []
         for data_type in self.data_types:
             sx_data = SX_Data(len(barcodes), prep_dir, data_type)
-            num_clones = sx_data.num_clones
+            num_clones.append(sx_data.num_clones)
             clones = sx_data.clones
             self.data_sources[data_type] = sx_data
-        # this must be same for all modality.
-        self.K = self.num_clones = num_clones
+        assert len(set(num_clones)) == 1, "multiome have different CNP"
+        self.K = self.num_clones = num_clones[0]
         self.clones = clones
 
         self.verbose = verbose
-
-        # some hack here TODO
-        global global_barcodes 
-        global_barcodes = barcodes
         return
 
     ##################################################
@@ -54,15 +49,23 @@ class SC_Model:
         if not init_params is None:
             for key, param in init_params.items():
                 params[key] = param
+        
+        if params.get("pi", None) is None:
+            params["pi"] = np.ones(self.K) / self.K
 
         if "GEX" in self.data_sources:
             if params.get("GEX-lambda", None) is None:
                 full_props = self.initialize_baseline_proportions("GEX")
+                params["GEX-lambda-full"] = full_props
                 # only retain CNA-related bins
                 params["GEX-lambda"] = full_props[self.data_sources["GEX"].ALL_MASK["CNP"]]
 
-        if params.get("pi", None) is None:
-            params["pi"] = np.ones(self.K) / self.K
+        if "ATAC" in self.data_sources:
+            if params.get("ATAC-lambda", None) is None:
+                full_props = self.initialize_baseline_proportions("ATAC")
+                # only retain CNA-related bins
+                params["ATAC-lambda-full"] = full_props
+                params["ATAC-lambda"] = full_props[self.data_sources["ATAC"].ALL_MASK["CNP"]]
 
         default_tau = 30
         default_inv_phi = 0.1  # inverse of phi
@@ -79,6 +82,19 @@ class SC_Model:
                     dtype=np.float32,
                 )
 
+        if "ATAC" in self.data_sources:
+            if params.get("ATAC-tau", None) is None:
+                params["ATAC-tau"] = np.full(
+                    self.data_sources["ATAC"].nrows_eff,
+                    fill_value=default_tau,
+                    dtype=np.float32,
+                )
+                params["ATAC-inv_phi"] = np.full(
+                    self.data_sources["ATAC"].nrows_eff,
+                    fill_value=default_inv_phi,
+                    dtype=np.float32,
+                )
+
         fix_params = {key: False for key in params.keys()}
         if not init_fix_params is None:
             for key in init_fix_params.keys():
@@ -90,6 +106,8 @@ class SC_Model:
         """this returns baseline proportions for all bins"""
         print(f"initialize baseline proportion for {modality}")
         if "cell_type" in self.barcodes:
+            cell_types = self.barcodes["cell_type"].unique()
+            print("All celltypes: ", cell_types)
             normal_labels = (
                 ~self.barcodes["cell_type"].str.contains("tumor", case=False)
             ).to_numpy()
@@ -100,29 +118,46 @@ class SC_Model:
             print("infer normal cells using allele model")
             # TODO allele model
             pass
+
+        T_normal = self.data_sources[modality].T
         base_props = compute_baseline_proportions(
             self.data_sources[modality].T, normal_labels
         )
+
+        # fig, axes = plt.subplots(nrows=1, ncols=3)
+        # # variance per bin
+        # vars_per_bin = np.var(T_normal, axis=1)
+        # mean_per_bin = np.mean(T_normal, axis=1)
+        # cvs_per_bin = np.std(T_normal, axis=1) / mean_per_bin
+        # print(np.histogram(vars_per_bin, bins=10))
+        # print(np.min(vars_per_bin), np.max(vars_per_bin), np.median(vars_per_bin))
+        # axes[0].hist(x=vars_per_bin[vars_per_bin < 100], bins=50)
+        # # axes[1].scatter(x=vars_per_bin, y=cvs_per_bin)
+        # axes[1].hist(x=cvs_per_bin[vars_per_bin < 100], bins=50)
+        # axes[2].hist(x=mean_per_bin[vars_per_bin < 100], bins=50)
+
+        # plt.show()
+        # sys.exit(0)
         return base_props
 
     ##################################################
     def compute_log_likelihood(self, params: dict):
         global_lls = np.zeros((self.N, self.K), dtype=np.float32)
         # sum over all modalities
-        for modality in self.data_types:
-            sx_data: SX_Data = self.data_sources[modality]
+        for data_type in self.data_types:
+            sx_data: SX_Data = self.data_sources[data_type]
             M = sx_data.apply_cnp_mask_shallow()
 
             # allele log-probs
             allele_ll_mat = _cond_betabin_logpmf(
-                M["X"], M["Y"], M["D"], params[f"{modality}-tau"], M["BAF"]
+                M["X"], M["Y"], M["D"], params[f"{data_type}-tau"], M["BAF"]
             )
             allele_lls = allele_ll_mat.sum(axis=0) # (N,K)
             global_lls += allele_lls
 
             # total log-probs
             total_ll_mat = _cond_negbin_logpmf(
-                M["T"], sx_data.Tn, M["C"], params[f"{modality}-lambda"], params[f"{modality}-inv_phi"]
+                M["T"], sx_data.Tn, M["C"], params[f"{data_type}-lambda"], params[f"{data_type}-inv_phi"]
             )
             total_lls = total_ll_mat.sum(axis=0) # (N,K)
             global_lls += total_lls
@@ -133,7 +168,7 @@ class SC_Model:
         return ll, log_marg, global_lls
 
     def _e_step(self, params: dict, t=0) -> np.ndarray:
-        """compute allele and total log-probs for each modality
+        """compute allele and total log-probs, summed over modalities
 
         Args:
             params (dict): parameters
@@ -164,27 +199,27 @@ class SC_Model:
             # update mixing density for clone assignments
             params["pi"] = np.sum(gamma, axis=0) / self.N
         
-        for modality in self.data_types:
-            sx_data: SX_Data = self.data_sources[modality]
-            if not fix_params.get(f"{modality}-lambda", True):
+        for data_type in self.data_types:
+            sx_data: SX_Data = self.data_sources[data_type]
+            if not fix_params.get(f"{data_type}-lambda", True):
                 # update baseline proportion
                 # since normal cells assignment might change, 
                 # baseline expression also update accordingly
                 # but we only do it for first few iters?
                 pass
 
-            if not fix_params.get(f"{modality}-tau", True):
-                # update over-dispersion parameter for betabin
-                # bins with same CNP are shared
-                for cnp_id, cnp_idx in sx_data.cnp_groups.items():
-                    cnp_state = sx_data.cnp_id2state[cnp_id]
+            for cnp_id, cnp_ids in sx_data.cnp_groups.items():
+                cnp_state = sx_data.cnp_id2state[cnp_id]
+                M = sx_data.subset_matrix(cnp_ids)
 
-
-            if not fix_params.get(f"{modality}-inv_phi", True):
-                # update over-dispersion parameter for negbin
-                # bins with same CNP are shared
-                for cnp_id, cnp_idx in sx_data.cnp_groups.items():
-                    cnp_state = sx_data.cnp_id2state[cnp_id]
+                if not fix_params.get(f"{data_type}-tau", True):
+                    # update over-dispersion parameter for betabin
+                    # bins with same CNP are shared
+                    pass
+                if not fix_params.get(f"{data_type}-inv_phi", True):
+                    # update over-dispersion parameter for negbin
+                    # bins with same CNP are shared
+                    pass
 
                 
         return
@@ -236,10 +271,6 @@ class SC_Model:
         posts.loc[posts["max_posterior"] < thres, label] = "NA"
         return posts
 
-    # def initialize_spot_proportions(self, modality: str):
-    #     return
-
-
 ##################################################
 # Likelihood functions
 def _cond_betabin_logpmf(
@@ -265,25 +296,6 @@ def _cond_betabin_logpmf(
     """
     (G,N) = X.shape
     K = p.shape[1]
-
-    # FIXME fixed, remove later
-    # fig, axes = plt.subplots(1, 2)
-    # dt = (Y - X)[:,global_barcodes.loc[global_barcodes["cell_type"]=="Tumor_cell"].index].flatten()
-    # sns.histplot(x=dt, hue=dt==0, ax=axes[0], bins=50)
-    
-    # baf = np.divide(Y, D, where=D>0, out=np.full_like(D, fill_value=-1, dtype=np.float32))
-    # sns.histplot(x=baf[:,global_barcodes.loc[global_barcodes["cell_type"]=="Tumor_cell"].index].flatten(), 
-    #              ax=axes[1], bins=50, binrange=[0,1])
-    # plt.savefig("tumor.png")
-
-    # fig, axes = plt.subplots(1, 2)
-    # dt = (Y - X)[:,global_barcodes.loc[global_barcodes["cell_type"]!="Tumor_cell"].index].flatten()
-    # sns.histplot(x=dt, hue=dt==0, ax=axes[0], bins=50)
-    
-    # baf = np.divide(Y, D, where=D>0, out=np.full_like(D, fill_value=-1, dtype=np.float32))
-    # sns.histplot(x=baf[:,global_barcodes.loc[global_barcodes["cell_type"]!="Tumor_cell"].index].flatten(), 
-    #              ax=axes[1], bins=50, binrange=[0,1])
-    # plt.savefig("normal.png")
 
     # (G, N, K)
     _X = X[:, :, None]
