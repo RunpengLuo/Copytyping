@@ -105,6 +105,7 @@ if __name__ == "__main__":
         fragment_file,
         chrom_sizes,
         whitelist=barcodes,
+        min_num_fragments=0,
         sorted_by_barcode=False,
         tempdir=tmp_dir,
         n_jobs=n_jobs,
