@@ -254,235 +254,49 @@ def load_calicost_prep_data(calicost_prep_dir: str):
     # TODO
     return
 
-
 ##################################################
-# Load 10x data
-def load_input_10x(
-    data_path: str,
-    barcodes: list,
-    annotation_file: str,
-    modality="",
-):
-    """
-    read in 10x directory, filter cells, add cell type annotations (optional), and add feature coordinates.
-    """
-    if modality == "visium":
-        adata = sq.read.visium(data_path, load_images=False)
-    elif modality == "multiome":
-        adata = sc.read_10x_mtx(
-            os.path.join(data_path, "filtered_feature_bc_matrix"),
-            var_names="gene_ids",
-            gex_only=False,
-        )
-
-    # filter barcodes
-    adata = adata[barcodes, :].copy()
-    adata.var["gene_ids"] = adata.var.index
-
-    # load gene annotation
-    print("load feature annotation")
-    ann = load_annotation_file_bed(annotation_file)
-    ann.drop_duplicates(subset="gene_ids", inplace=True)
-    ann["gene_ids"] = ann["gene_ids"].astype(object)
-    ann = ann.set_index("gene_ids")
-    adata.var = adata.var.merge(
-        ann, left_on="gene_ids", right_index=True, how="left", sort=False
-    )
-
-    if modality == "multiome":
-        # ATAC peaks are located directly in the file, parse it
-        mask = adata.var["feature_types"] == "Peaks"
-        peaks = adata.var.index[mask]
-        adata.var.loc[mask, "#CHR"] = peaks.str.split(":").str[0]
-        adata.var.loc[mask, "START"] = (
-            peaks.str.split(":").str[1].str.split("-").str[0].astype(int)
-        )
-        adata.var.loc[mask, "END"] = (
-            peaks.str.split(":").str[1].str.split("-").str[1].astype(int)
-        )
-    print(f"#features={adata.shape[1]}")
-
-    located_features = adata.var.index[adata.var["START"].notna()]
-    adata = adata[:, located_features].copy()
-    print(f"#features (ignore na positions)={adata.shape[1]}")
-
-    adata.var["#CHR"] = adata.var["#CHR"].astype(str)
-    adata.var["START"] = adata.var["START"].astype(int)
-    adata.var["END"] = adata.var["END"].astype(int)
-
-    # adata.var["chromosome"] = adata.var["#CHR"]
-    # adata.var["start"] = adata.var["START"]
-    # adata.var["end"] = adata.var["END"]
-
-    adata.var["pseudobulk_counts"] = np.asarray(adata.X.sum(axis=0)).flatten()
-    return adata
-
-
-##################################################
-# Load scATAC-seq fragments data
-def load_atac_fragments(atac_frag_file: str):
-    atac_fragments = pd.read_table(atac_frag_file, sep="\t", comment="#")
-    atac_fragments = atac_fragments.rename(
-        columns={
-            "chrom": "#CHR",
-            "chromStart": "START",
-            "chromEnd": "END",
-            "barcode": "BARCODE",
-            "readSupport": "#READS",
-            "strand": "STRAND",
-        }
-    )
-    print(atac_fragments.head())
-    return atac_fragments
-
-
-def build_atac_tile_matrix(
-    fragment_file: str, chrom_file: str, barcodes: list, out_file: str, tmp_dir: str, window_size=500
-):
-    print("build ATAC fragment count matrix by SnapATAC2")
-    chrom_sizes = get_chr_sizes(chrom_file)
-
-    print("load fragments")
-    adata: AnnData = snap.pp.import_fragments(
-        fragment_file,
-        chrom_sizes,
-        whitelist=barcodes,
-        sorted_by_barcode=False,
-        tempdir=tmp_dir
-    )
-
-    print("build tile matrix")
-    snap.pp.add_tile_matrix(
-        adata,
-        bin_size=window_size,
-        exclude_chroms=["chrM", "chrX", "chrY", "M", "X", "Y"],
-    )
-    adata.write_h5ad(out_file, compression="gzip")
-    return adata
-
-
-##################################################
-def consolidate_snp_feature_ATAC(
-    atac_frag_file: str,
-    snp_df: pd.DataFrame,
-    haplo_blocks: pd.DataFrame,
-    tmp_dir: str,
-    genome_file: str,
-    window_size=1e5,
-):
-    print(f"consolidate SNPs with features for ATACseq")
-
-    ##################################################
-    # compute per-window ATAC coverage
-    tmp_cov_file = os.path.join(tmp_dir, "tmp_ATAC_cov.out.bed")
-    if not os.path.exists(tmp_cov_file):
-        # 1. compute CNA windows over haplotype blocks
-        tmp_block_in_file = os.path.join(tmp_dir, "tmp_block.in.bed")
-        tmp_window_file = os.path.join(tmp_dir, "tmp_windows.out.bed")
-        haplo_blocks.to_csv(
-            tmp_block_in_file,
-            sep="\t",
-            header=False,
-            index=False,
-            columns=["#CHR", "START", "END", "HB"],
-        )
-
-        run_bedtools_makewindows(tmp_block_in_file, tmp_window_file, window_size)
-
-        # add sex chroms to avoid bedtools error, no HB tag
-        with open(tmp_window_file, "a") as fd:
-            fd.write("chrX\t0\t1\tNA\n")
-            fd.write("chrY\t0\t1\tNA\n")
-            fd.close()
-
-        run_bedtools_coverage(
-            atac_frag_file,
-            tmp_window_file,
-            genome_file,
-            tmp_cov_file,
-            tmp_dir,
-            load_df=False,
-        )
-    atac_cov_df = pd.read_table(
-        tmp_cov_file,
-        header=None,
-        names=["#CHR", "START", "END", "HB_WIN", "count"],
-        dtype={"HB_WIN": "string", "count": int},
-    )
-
-    var_super_df = atac_cov_df.loc[atac_cov_df["HB_WIN"] != "NA", :].reset_index(
-        drop=True
-    )
-    var_super_df["HB"] = (
-        var_super_df["HB_WIN"].apply(func=lambda v: v.split("_")[0]).astype(int)
-    )
-    var_super_df["SUPER_VAR_IDX"] = var_super_df.index
-    var_super_df = var_super_df.drop(columns=["HB_WIN"])
-
-    ##################################################
-    snp_df = assign_snp_to_feature(var_super_df, snp_df, "ATAC")
-    return snp_df, var_super_df
-
-
-def assign_snp_to_feature(
-    var_super_df: pd.DataFrame,
-    snp_df: pd.DataFrame,
-    feature_name: str,
-):
-    # assign SUPER_VAR_IDX tag to snp_df
-    print(f"#{feature_name}-SNP={len(snp_df)}")
-    snp_df = assign_pos_to_range(
-        snp_df, var_super_df, ref_id="SUPER_VAR_IDX", pos_col="POS0"
-    )
-    isna_snp_df = snp_df["SUPER_VAR_IDX"].isna()
-    # this is mostly due to XXX
-    print(
-        f"#{feature_name}-SNPs outside any super-feature={np.sum(isna_snp_df) / len(snp_df):.3%}"
-    )
-    snp_df = snp_df.loc[snp_df["SUPER_VAR_IDX"].notna(), :].copy(deep=True)
-    return snp_df
-
-
-def consolidate_snp_feature_RNA(
+def consolidate_snp_feature(
     adata: AnnData,
     snp_df: pd.DataFrame,
     haplo_blocks: pd.DataFrame,
     tmp_dir: str,
-    feature_name: str,
+    modality: str,
+    feature_may_overlap=True
 ):
-    print(f"consolidate SNPs with features for {feature_name}")
+    print(f"consolidate SNPs with features for {modality}")
 
     ##################################################
     # union all overlapping features, build var_super_df
-    print("detect overlapping features")
-    tmp_feature_in_file = os.path.join(tmp_dir, f"tmp_{feature_name}.in.bed")
-    tmp_feature_out_file = os.path.join(tmp_dir, f"tmp_{feature_name}.out.bed")
-    adata.var.to_csv(
-        tmp_feature_in_file,
-        sep="\t",
-        header=False,
-        index=False,
-        columns=["#CHR", "START", "END", "gene_ids"],
-    )
+    adata.var["unique_index"] = np.arange(len(adata.var))
 
-    var_df_clustered = run_bedtools_cluster(
-        tmp_feature_in_file,
-        tmp_feature_out_file,
-        tmp_dir,
-        max_dist=0,
-        load_df=True,
-        usecols=list(range(5)),
-        names=["#CHR", "START", "END", "gene_ids", "SUPER_VAR_IDX"],
-    )
+    if feature_may_overlap:
+        print("detect overlapping features")
+        tmp_feature_in_file = os.path.join(tmp_dir, f"tmp_{modality}.in.bed")
+        tmp_feature_out_file = os.path.join(tmp_dir, f"tmp_{modality}.out.bed")
+        adata.var.to_csv(
+            tmp_feature_in_file,
+            sep="\t",
+            header=False,
+            index=False,
+            columns=["#CHR", "START", "END", "unique_index"],
+        )
 
-    new_var = pd.merge(
-        left=adata.var,
-        right=var_df_clustered,
-        on=["#CHR", "START", "END", "gene_ids"],
-        how="left",
-    )
-    new_var.index = adata.var.index.astype(str)
-    adata.var = new_var
+        var_df_clustered = run_bedtools_cluster(
+            tmp_feature_in_file,
+            tmp_feature_out_file,
+            tmp_dir,
+            max_dist=0,
+            load_df=True,
+            usecols=list(range(5)),
+            names=["#CHR", "START", "END", "unique_index", "SUPER_VAR_IDX"],
+        )
+        adata.var = adata.var.reset_index(drop=False).merge(
+            right=var_df_clustered[["unique_index", "SUPER_VAR_IDX"]],
+            on="unique_index",
+            how="left",
+        ).set_index("index")
+    else:
+        adata.var["SUPER_VAR_IDX"] = adata.var["unique_index"]
 
     var_supers = adata.var.groupby(by="SUPER_VAR_IDX", sort=False, as_index=True)
     var_super_df = var_supers.agg(
@@ -492,7 +306,7 @@ def consolidate_snp_feature_RNA(
             "END": ("END", "max"),
         }
     ).reset_index(drop=False)
-    print(f"#{feature_name}-super-feature={len(var_super_df)}")
+    print(f"#{modality}-super-feature={len(var_super_df)}")
 
     ##################################################
     # assign HB tag to var_super_df
@@ -502,27 +316,35 @@ def consolidate_snp_feature_RNA(
     isna_super_var = var_super_df["HB"].isna()
     # this is mostly due to centromere/satellite-repeat mask.
     print(
-        f"#{feature_name}-super-feature outside any haplotype blocks={np.sum(isna_super_var) / len(var_super_df):.3%}"
+        f"#{modality}-super-feature outside any haplotype blocks={np.sum(isna_super_var) / len(var_super_df):.3%}"
     )
 
     var_super_df.dropna(subset="HB", inplace=True)
     var_super_df["HB"] = var_super_df["HB"].astype(np.int32)
 
     # map HB tag to adata.var, filter any features accordingly
-    new_var = pd.merge(
-        left=adata.var,
+    adata.var = adata.var.reset_index(drop=False).merge(
         right=var_super_df[["SUPER_VAR_IDX", "HB"]],
         on="SUPER_VAR_IDX",
         how="left",
-    )
-    new_var.index = adata.var.index.astype(str)
-    adata.var = new_var
+    ).set_index("index")
 
     adata = adata[:, adata.var["HB"].notna()].copy()
     adata.var["HB"] = adata.var["HB"].astype(np.int32)
 
     ##################################################
-    snp_df = assign_snp_to_feature(var_super_df, snp_df, feature_name)
+    # assign SNPs to super-features
+    print(f"#{modality}-SNP={len(snp_df)}")
+    snp_df = assign_pos_to_range(
+        snp_df, var_super_df, ref_id="SUPER_VAR_IDX", pos_col="POS0"
+    )
+    isna_snp_df = snp_df["SUPER_VAR_IDX"].isna()
+
+    print(
+        f"#{modality}-SNPs outside any super-feature={np.sum(isna_snp_df) / len(snp_df):.3%}"
+    )
+    snp_df = snp_df.loc[snp_df["SUPER_VAR_IDX"].notna(), :].copy(deep=True)
+
     return adata, snp_df, var_super_df
 
 
@@ -608,6 +430,7 @@ def co_binning_allele_feature(
     ).reset_index(drop=False)
     var_bins.loc[:, "#VAR"] = var_super_bins.size().reset_index(drop=True)
     var_bins.loc[:, "BLOCKSIZE"] = var_bins["END"] - var_bins["START"]
+    print(f"#bins={len(var_bins)}")
 
     # append copy-number profile to bins
     var_bins = pd.merge(
@@ -699,19 +522,22 @@ def aggregate_var_counts(
     out_dir: str,
 ):
     print(f"aggregate total counts per bin for {modality}")
-    num_bins = len(var_bins)
-    num_barcodes = adata.n_obs
 
-    adata.var["VAR_IDX"] = np.arange(adata.X.shape[1])
+    n_cells, n_feats = adata.n_obs, adata.n_vars
+    n_bins = len(var_bins)
+    feat_bin = adata.var["BIN_ID"].to_numpy()
+    indicator_matrix = sparse.csr_matrix(
+        (np.ones_like(feat_bin, dtype=np.int8),
+        (np.arange(n_feats), feat_bin)),
+        shape=(n_feats, n_bins)
+    )
+    X = adata.X
+    if not sparse.issparse(X):
+        X = sparse.csr_matrix(X)
 
-    bin_count_mat = np.zeros((num_bins, num_barcodes), dtype=np.int32)
-    bin_ids = adata.var["BIN_ID"].unique()
-    cell_var_bins = adata.var.groupby(by="BIN_ID", sort=False, as_index=True)
-    for bin_id in bin_ids:
-        var_bin = cell_var_bins.get_group(bin_id)
-        var_indices = var_bin["VAR_IDX"].to_numpy()
-        bin_count_mat[bin_id, :] = np.sum(adata.X[:, var_indices], axis=1).ravel()
+    bin_count_mat = X @ indicator_matrix    # shape: (n_cells × n_bins)
+    bin_count_mat = bin_count_mat.T.tocsr()  # to (n_bins × n_cells) for consistency
 
     bin_count_file = os.path.join(out_dir, f"count.npz")
-    sparse.save_npz(bin_count_file, csr_matrix(bin_count_mat))
+    sparse.save_npz(bin_count_file, bin_count_mat)
     return

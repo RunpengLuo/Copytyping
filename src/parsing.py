@@ -64,6 +64,21 @@ def parse_arguments_preprocess(args=None):
         type=str,
         help="barcodes.txt file",
     )
+
+    parser.add_argument(
+        "--rna_h5ad",
+        required=False,
+        type=str,
+        help="sample.scMultiome.h5ad",
+    )
+
+    parser.add_argument(
+        "--atac_h5ad",
+        required=False,
+        type=str,
+        help="sample.atac.h5ad",
+    )
+
     parser.add_argument(
         "--ranger_dir",
         required=False,
@@ -92,9 +107,9 @@ def parse_arguments_preprocess(args=None):
 
     ##################################################
     # aux files
-    parser.add_argument(
-        "--annotation_file", required=False, type=str, help="annotation bed file"
-    )
+    # parser.add_argument(
+    #     "--annotation_file", required=False, type=str, help="annotation bed file"
+    # )
     parser.add_argument(
         "--celltype_file", required=False, type=str, help="cell type file"
     )
@@ -109,20 +124,20 @@ def parse_arguments_preprocess(args=None):
 
     ##################################################
     # Parameters
-    parser.add_argument(
-        "--min_gex_count",
-        required=False,
-        default=200,
-        type=float,
-        help="Adaptive binning over genes, min_gex_count",
-    )
-    parser.add_argument(
-        "--min_atac_count",
-        required=False,
-        default=200,
-        type=float,
-        help="Adaptive binning over genes, min_atac_count",
-    )
+    # parser.add_argument(
+    #     "--min_gex_count",
+    #     required=False,
+    #     default=200,
+    #     type=float,
+    #     help="Adaptive binning over genes, min_gex_count",
+    # )
+    # parser.add_argument(
+    #     "--min_atac_count",
+    #     required=False,
+    #     default=200,
+    #     type=float,
+    #     help="Adaptive binning over genes, min_atac_count",
+    # )
 
     args = parser.parse_args()
     return vars(args)

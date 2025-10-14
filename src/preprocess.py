@@ -69,7 +69,6 @@ if __name__ == "__main__":
     # preprocess 10x inputs
     barcode_file = args["barcodes"]
     ranger_dir = args["ranger_dir"]
-    annotation_file = args["annotation_file"]
     celltype_file = args["celltype_file"]
 
     barcodes = read_barcodes(barcode_file)
@@ -91,102 +90,106 @@ if __name__ == "__main__":
     )
 
     if modality == "multiome":
-        adata = load_input_10x(ranger_dir, barcodes, annotation_file, modality=modality)
-
         ##################################################
-        # handle scRNA-seq data
-        # gex_dir = os.path.join(prep_dir, "GEX")
-        # os.makedirs(gex_dir, exist_ok=True)
-        # rna_adata = adata[:, adata.var["feature_types"] == "Gene Expression"].copy()
-        # print(f"#genes={rna_adata.shape[1]}")
-        # rna_bc_idxs, rna_cell_snps, rna_dp_mtx, rna_ad_mtx = load_cellsnp_files(
-        #     args["cellsnp_dir_1"], snp_info, barcodes
-        # )
-        # rna_adata, rna_cell_snps, rna_super_features = consolidate_snp_feature_RNA(
-        #     rna_adata, rna_cell_snps, haplo_blocks, tmp_dir, "GEX"
-        # )
+        print("process gene expression data")
+        gex_dir = os.path.join(prep_dir, "GEX")
+        os.makedirs(gex_dir, exist_ok=True)
+        rna_adata = sc.read_h5ad(args["rna_h5ad"])
+        print(rna_adata)
+        print(rna_adata.var.head(3))
 
-        # rna_super_features = stat_pseudobulk(
-        #     rna_adata, rna_cell_snps, rna_super_features
-        # )
+        rna_bc_idxs, rna_cell_snps, rna_dp_mtx, rna_ad_mtx = load_cellsnp_files(
+            args["cellsnp_dir_1"], snp_info, barcodes
+        )
+        rna_adata, rna_cell_snps, rna_super_features = consolidate_snp_feature(
+            rna_adata, rna_cell_snps, haplo_blocks, tmp_dir, "GEX", feature_may_overlap=True
+        )
 
-        # rna_adata, rna_cell_snps, rna_bins = co_binning_allele_feature(
-        #     rna_adata,
-        #     rna_cell_snps,
-        #     rna_super_features,
-        #     haplo_blocks,
-        #     min_allele_counts_rna,
-        #     min_total_counts_rna,
-        # )
+        rna_super_features = stat_pseudobulk(
+            rna_adata, rna_cell_snps, rna_super_features
+        )
 
-        # rna_cell_snps.to_csv("cell_snps.tsv",
-        #     sep="\t",
-        #     header=True,
-        #     index=False,
-        # )
+        rna_adata, rna_cell_snps, rna_bins = co_binning_allele_feature(
+            rna_adata,
+            rna_cell_snps,
+            rna_super_features,
+            haplo_blocks,
+            min_allele_counts_rna,
+            min_total_counts_rna,
+        )
 
-        # aggregate_allele_counts(
-        #     rna_bins,
-        #     rna_bc_idxs,
-        #     rna_cell_snps,
-        #     rna_dp_mtx,
-        #     rna_ad_mtx,
-        #     "GEX",
-        #     gex_dir,
-        # )
+        aggregate_allele_counts(
+            rna_bins,
+            rna_bc_idxs,
+            rna_cell_snps,
+            rna_dp_mtx,
+            rna_ad_mtx,
+            "GEX",
+            gex_dir,
+        )
 
-        # aggregate_var_counts(rna_bins, rna_adata, "GEX", gex_dir)
+        aggregate_var_counts(rna_bins, rna_adata, "GEX", gex_dir)
 
-        # rna_bins.to_csv(
-        #     os.path.join(gex_dir, "bin_information.tsv"),
-        #     columns=["BIN_ID", "#CHR", "START", "END", "HB", "CNP", "#VAR", "VAR_DP", "ALLELE_DP", "B_ALLELE_DP"],
-        #     sep="\t",
-        #     header=True,
-        #     index=False,
-        # )
+        rna_bins.to_csv(
+            os.path.join(gex_dir, "bin_information.tsv"),
+            columns=["BIN_ID", "#CHR", "START", "END", "HB", "CNP", "#VAR", "VAR_DP", "ALLELE_DP", "B_ALLELE_DP"],
+            sep="\t",
+            header=True,
+            index=False,
+        )
 
         ##################################################
         # handle scATAC-seq data
         atac_dir = os.path.join(prep_dir, "ATAC")
         os.makedirs(atac_dir, exist_ok=True)
+        atac_adata = sc.read_h5ad(args["atac_h5ad"])
+        print(atac_adata)
+        print(atac_adata.var.head(3))
 
         atac_bc_idxs, atac_cell_snps, atac_dp_mtx, atac_ad_mtx = load_cellsnp_files(
             args["cellsnp_dir_2"], snp_info, barcodes
         )
+        atac_adata, atac_cell_snps, atac_super_features = consolidate_snp_feature(
+            atac_adata, atac_cell_snps, haplo_blocks, tmp_dir, "ATAC", 
+            feature_may_overlap=False
+        )
 
-        atac_fragment_file = os.path.join(ranger_dir, "atac_fragments.tsv.gz")
-        atac_adata_file = os.path.join(out_dir, "atac_adata.h5ad")
-        if not os.path.exists(atac_adata_file):
-            atac_adata = build_atac_tile_matrix(
-                atac_fragment_file,
-                args["genome_file"],
-                barcodes,
-                atac_adata_file,
-                tmp_dir,
-                window_size=5e3,
-            )
-        else:
-            atac_adata = sc.read_h5ad(atac_adata_file)
+        atac_super_features = stat_pseudobulk(
+            atac_adata, atac_cell_snps, atac_super_features
+        )
 
-        print(atac_adata)
-        # consolidate_snp_feature_ATAC(atac_fragment_file, atac_cell_snps,
-        #                              haplo_blocks, tmp_dir, args["genome_file"], window_size=1e5)
+        atac_adata, atac_cell_snps, atac_bins = co_binning_allele_feature(
+            atac_adata,
+            atac_cell_snps,
+            atac_super_features,
+            haplo_blocks,
+            min_allele_counts_atac,
+            min_total_counts_atac,
+        )
 
-        # TODO extract fragment counts directly.
-        # atac_adata = adata[:, adata.var["feature_types"] == "Peaks"].copy()
-        # print(f"#peaks={atac_adata.shape[1]}")
-        # atac_bc_idxs, atac_cell_snps, atac_dp_mtx, atac_ad_mtx = load_cellsnp_files(
-        #     args["cellsnp_dir_2"], snp_info, barcodes
-        # )
-        # TODO think about better way to do the consolidation
-        # atac_adata, atac_cell_snps, atac_super_features = consolidate_snp_feature(atac_adata, atac_cell_snps, haplo_blocks, tmp_dir, "scATAC-seq")
-        # print(atac_adata.var.head())
-        # print(atac_cell_snps.head())
+        aggregate_allele_counts(
+            atac_bins,
+            atac_bc_idxs,
+            atac_cell_snps,
+            atac_dp_mtx,
+            atac_ad_mtx,
+            "ATAC",
+            atac_dir,
+        )
 
-        pass
+        aggregate_var_counts(atac_bins, atac_adata, "ATAC", atac_dir)
+
+        atac_bins.to_csv(
+            os.path.join(atac_dir, "bin_information.tsv"),
+            columns=["BIN_ID", "#CHR", "START", "END", "HB", "CNP", "#VAR", "VAR_DP", "ALLELE_DP", "B_ALLELE_DP"],
+            sep="\t",
+            header=True,
+            index=False,
+        )
     elif modality == "visium":
         ##################################################
-        adata = load_input_10x(ranger_dir, barcodes, annotation_file, modality=modality)
+        adata = sc.read_h5ad(args["rna_h5ad"])
+        # adata = load_input_10x(ranger_dir, barcodes, annotation_file, modality=modality)
 
         # spatial coordinates TODO
         pass

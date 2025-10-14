@@ -1,10 +1,12 @@
 import os
 import sys
-from collections import OrderedDict
 import gzip
 import pandas as pd
 import numpy as np
 import pysam
+
+from collections import OrderedDict
+import pyranges as pr
 
 import subprocess
 from io import StringIO
@@ -61,7 +63,7 @@ def read_cn_profile(seg_ucn: str):
     seg_df["#CHR"] = pd.Categorical(seg_df["#CHR"], categories=chs, ordered=True)
     seg_df.sort_values(by=["#CHR", "START"], inplace=True, ignore_index=True)
 
-    groups_ch = seg_df.groupby(by="#CHR", sort=False)
+    groups_ch = seg_df.groupby(by="#CHR", sort=False, observed=True)
 
     ch2segments = OrderedDict()  # ch -> position array
     ch2a_profile = OrderedDict()  # ch -> cn profile
@@ -284,17 +286,13 @@ def BBC_segmentation(bbcs_df: pd.DataFrame):
 
 
 def read_celltypes(celltype_file: str):
-    def simp_type(t: str):
-        return t if "tumor" in t.lower() else "normal"
-
-    def simp_type2(t: str):
-        return "tumor" if "tumor" in t.lower() else "normal"
-
     # cell_id cell_types final_type
     celltypes = pd.read_table(celltype_file)
     celltypes = celltypes.rename(
         columns={"cell_id": "BARCODE", "cell_types": "cell_type"}
     )
+    celltypes["BARCODE"] = celltypes["BARCODE"].astype(str)
+
     if "met_subcluster" in celltypes.columns.tolist():
         print("use column met_subcluster as final_type")
         celltypes["final_type"] = celltypes["met_subcluster"]
@@ -305,14 +303,6 @@ def read_celltypes(celltype_file: str):
         )
         print("use column cell_type as final_type")
         celltypes["final_type"] = celltypes["cell_type"]
-    # if "simp_type" not in celltypes.columns.tolist():
-    #     celltypes["simp_type"] = celltypes.apply(
-    #         func=lambda r: simp_type(r["final_type"]), axis=1
-    #     )
-    # if "simp_type2" not in celltypes.columns.tolist():
-    #     celltypes["simp_type2"] = celltypes.apply(
-    #         func=lambda r: simp_type2(r["final_type"]), axis=1
-    #     )
     return celltypes
 
 
@@ -594,6 +584,38 @@ def load_annotation_file_bed(ann_file: str):
     return ann
 
 
+def load_annotation_file_gtf(ann_file: str):
+    gtf = pd.read_csv(
+        ann_file,
+        sep="\t",
+        comment="#",
+        header=None,
+        names=[
+            "#CHR",
+            "source",
+            "feature_types",
+            "START",
+            "END",
+            "score",
+            "strand",
+            "frame",
+            "attribute",
+        ],
+    )
+    # keep only gene records
+    gtf = gtf[gtf["feature_types"] == "gene"].copy()
+
+    # extract key attributes
+    gtf["gene_ids"] = gtf["attribute"].str.extract('gene_id "([^"]+)"')
+    gtf["gene_name"] = gtf["attribute"].str.extract('gene_name "([^"]+)"')
+    gtf["gene_type"] = gtf["attribute"].str.extract('gene_type "([^"]+)"')
+    ann = gtf[["#CHR", "START", "END", "gene_ids", "gene_name", "gene_type"]].drop_duplicates()
+
+    ann["gene_id_base"] = ann["gene_ids"].str.replace(r"\.\d+$", "", regex=True)
+
+    return ann
+
+
 import pyranges as pr
 
 
@@ -633,19 +655,20 @@ def assign_largest_overlap(
 def assign_pos_to_range(
     qry: pd.DataFrame, ref: pd.DataFrame, ref_id="SUPER_VAR_IDX", pos_col="POS0"
 ):
-    qry_grp_chs = qry.groupby(by="#CHR", sort=False)
-    ref_grp_chs = ref.groupby(by="#CHR", sort=False)
+    qry_pr = pr.PyRanges(
+        chromosomes=qry["#CHR"],
+        starts=qry[pos_col],
+        ends=qry[pos_col] + 1
+    )
+    qry_pr = qry_pr.insert(pd.Series(data = qry.index.to_numpy(), name="qry_index"))
+    ref_pr = pr.PyRanges(
+        chromosomes=ref["#CHR"],
+        starts=ref["START"],
+        ends=ref["END"],
+    )
+    ref_pr = ref_pr.insert(ref[ref_id])
 
+    joined = qry_pr.join(ref_pr)
     qry[ref_id] = pd.NA
-    for ch, ref_grp in ref_grp_chs:
-        if ch not in qry_grp_chs.groups:
-            continue
-        qry_grp_ch = qry_grp_chs.get_group(ch)
-        for _, ref_row in ref_grp.iterrows():
-            ref_start, ref_end = ref_row["START"], ref_row["END"]
-            ref_snps = qry_grp_ch.loc[
-                (qry_grp_ch[pos_col] >= ref_start) & (qry_grp_ch[pos_col] < ref_end), :
-            ]
-            if len(ref_snps) > 0:
-                qry.loc[ref_snps.index, ref_id] = ref_row[ref_id]
+    qry.loc[joined.df["qry_index"], ref_id] = joined.df[ref_id].to_numpy()
     return qry
