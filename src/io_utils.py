@@ -76,7 +76,6 @@ def load_snps_pseudobulk(
 # Load Allele count data
 def load_cellsnp_files(
     cellsnp_dir: str,
-    snp_info: pd.DataFrame,
     barcodes: list,
 ):
     print(f"load cell-snp files from {cellsnp_dir}")
@@ -97,20 +96,6 @@ def load_cellsnp_files(
 
     cell_snps = read_VCF_cellsnp_err_header(vcf_file)
     cell_snps["RAW_SNP_IDX"] = np.arange(len(cell_snps))  # use to index matrix
-    if not snp_info is None:
-        cell_snps = pd.merge(
-            left=cell_snps,
-            right=snp_info[["#CHR", "POS", "POS0", "PHASE", "HB"]],
-            on=["#CHR", "POS"],
-            how="left",
-        )
-        # some cell-snp SNPs may outside CNV segments, due to post-filtering in HATCHet2
-        cell_snps = cell_snps.loc[cell_snps["PHASE"].notna(), :]
-
-        cell_snps["PHASE"] = cell_snps["PHASE"].astype(np.float32)
-        cell_snps["HB"] = cell_snps["PHASE"].astype(np.int32)
-        cell_snps["POS0"] = cell_snps["POS0"].astype(cell_snps["POS"].dtype)
-
     return [cell_snps, dp_mat, ref_mat, alt_mat]
 
 def load_calicost_prep_data(calicost_prep_dir: str, barcodes: list):
@@ -144,6 +129,20 @@ def load_calicost_prep_data(calicost_prep_dir: str, barcodes: list):
     cell_snps["PS"] = 1
     assert (len(barcodes), len(cell_snps)) == ref_mat.shape
     return [cell_snps, dp_mat, ref_mat, alt_mat]
+
+def load_genetic_map(genetic_map_file: str, mode="eagle2"):
+    assert mode == "eagle2"
+    genetic_map = pd.read_table(genetic_map_file, sep="\t").rename(
+        columns={"chr": "#CHR", 
+                 "position": "POS", 
+                 "COMBINED_rate(cM/Mb)": "recomb_rate",
+                 "Genetic_Map(cM)": "pos_cm"}
+    )
+    if not genetic_map["#CHR"].str.startswith("chr").any():
+        genetic_map["#CHR"] = "chr" + genetic_map["#CHR"].astype(str)
+    genetic_map = sort_df_chr(genetic_map, ch="#CHR", pos="POS")
+    genetic_map["POS0"] = genetic_map["POS"] - 1
+    return genetic_map
 
 ##################################################
 # copytyping IOs

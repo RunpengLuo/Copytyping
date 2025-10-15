@@ -60,6 +60,13 @@ def parse_arguments_preprocess(args=None):
         help="bulk, pseudobulk",
     )
     parser.add_argument(
+        "--soft_phase",
+        action="store_true",
+        default=False,
+        help="set if use conditional MAP posterior for phasing",
+    )
+
+    parser.add_argument(
         "--vcf_file",
         required=False,
         type=str,

@@ -41,10 +41,16 @@ def annotate_snps(
     snp_info["SEG_IDX"] = snp_info["SEG_IDX"].astype(segs.index.dtype)
     snp_info = snp_info.reset_index(drop=True)
 
-    snp_info["PHASE"] = snp_info["GT"].astype(np.float32)
+    snp_info["imbalanced"] = segs.loc[snp_info["SEG_IDX"].to_numpy(), "imbalanced"].to_numpy()
+
     snp_info["START"] = snp_info["POS0"]
     snp_info["END"] = snp_info["POS"]
+
     snp_info["DP"] = allele_counts
+    snp_info["PHASE_RAW"] = snp_info["GT"].astype(np.float32)
+    phases = snp_info["PHASE_RAW"].to_numpy()
+    snp_info["B_ALLELE_RAW"] = phases * ref_counts + (1 - phases) * alt_counts
+    snp_info["BAF_RAW"] = (snp_info["B_ALLELE_RAW"] / snp_info["DP"]).round(3)
     return snp_info, allele_counts, ref_counts, alt_counts
 
 def annotate_snps_post(
@@ -64,10 +70,10 @@ def annotate_snps_post(
         ).set_index("index")
 
         # some SNPs may outside CNV segments or unphased
-        cell_snps = cell_snps.loc[cell_snps["PHASE"].notna(), :]
+        cell_snps = cell_snps.loc[cell_snps["PHASE"].notna(), :].copy(deep=True)
 
         cell_snps["PHASE"] = cell_snps["PHASE"].astype(np.float32)
-        cell_snps["HB"] = cell_snps["PHASE"].astype(np.int32)
+        cell_snps["HB"] = cell_snps["HB"].astype(np.int32)
         cell_snps["POS0"] = cell_snps["POS0"].astype(cell_snps["POS"].dtype)
         allele_infos[data_type][0] = cell_snps
     return allele_infos

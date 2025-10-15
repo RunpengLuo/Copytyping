@@ -37,7 +37,7 @@ def wrapper_single_data_type(
         haplo_blocks,
         tmp_dir,
         data_type,
-        feature_may_overlap=True,
+        feature_may_overlap=data_type != "ATAC",
     )
 
     adata, cell_snps, bins = co_binning_allele_feature(
@@ -85,9 +85,6 @@ def wrapper_single_data_type(
 
 if __name__ == "__main__":
     args = parse_arguments_preprocess()
-
-    phase_method = "iid-map"
-    phase_mode = "bulk"
 
     min_allele_counts_ps = 5000
     trust_PS = True
@@ -157,22 +154,22 @@ if __name__ == "__main__":
 
     ##################################################
     # load allele informations per data type
-    allele_infos = {}
-    data_types = []
     if modality == "multiome":
         data_types = ["GEX", "ATAC"]
-        # scRNA-seq, load from cellsnp-lite
-        # rna_cell_snps, rna_dp_mat, rna_ref_mat, rna_alt_mat
-        allele_infos["GEX"] = load_cellsnp_files(args["cellsnp_dir_1"], None, barcodes)
-        # scATAC-seq, load from cellsnp-lite
-        # atac_cell_snps, atac_dp_mat, atac_ref_mat, atac_alt_mat
-        allele_infos["ATAC"] = load_cellsnp_files(args["cellsnp_dir_2"], None, barcodes)
-    elif modality == "visium":
-        allele_infos["visium"] = load_calicost_prep_data(
-            args["calicoST_prep_dir"], barcodes
-        )
+        snp_dirs = {"GEX": args["cellsnp_dir_1"],
+                    "ATAC": args["cellsnp_dir_2"]}
     else:
-        raise ValueError()
+        data_types = [modality]
+        assert modality == "visium"
+        snp_dirs = {modality: args["calicoST_prep_dir"]}
+
+    allele_infos = {}
+    for data_type in data_types:
+        allele_infos[data_type] = {
+            "GEX": load_cellsnp_files,
+            "ATAC": load_cellsnp_files,
+            "visium": load_calicost_prep_data
+        }[data_type](snp_dirs[data_type], barcodes)
 
     ##################################################
     # phase SNPs and build haplotype blocks. shared across modalities
@@ -186,6 +183,7 @@ if __name__ == "__main__":
         haplo_blocks = pd.read_table(haplo_block_file, sep="\t", index_col=None)
         snp_info = pd.read_table(snp_info_file, sep="\t", index_col=None)
     else:
+        phase_mode = args["phase_mode"]
         if phase_mode == "bulk":
             print("phase using bulk information")
             phased_snps = read_VCF(args["vcf_file"], phased=True)
@@ -213,8 +211,10 @@ if __name__ == "__main__":
             snp_info,
             ref_counts,
             alt_counts,
-            phase_method=phase_method,
+            genetic_map_file=args["genetic_map"],
             trust_PS=trust_PS,
+            model_overdispersion=False,
+            soft_phasing=args["soft_phase"],
             min_allele_counts=min_allele_counts_ps,
             verbose=True,
         )
