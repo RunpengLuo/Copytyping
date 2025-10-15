@@ -248,7 +248,7 @@ class SC_Model:
             ll, _, _ = self.compute_log_likelihood(params)
             ll_trace.append(ll)
             if self.verbose:
-                print(f"[{t:03d}] log-likelihood = {ll:.6f}")
+                print(f"iter={t:03d} log-likelihood = {ll:.6f}")
                 print(params["pi"])
 
             if t > 0:

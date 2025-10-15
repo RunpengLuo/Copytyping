@@ -7,13 +7,86 @@ import pandas as pd
 
 import scanpy as sc
 
+from parsing import parse_arguments_preprocess
 from utils import *
 from raw_io_utils import *
+from snp_phaser import construct_phase_blocks
 
-from parsing import parse_arguments_preprocess
+
+def wrapper_single_data_type(
+    h5ad_file: str,
+    haplo_blocks: pd.DataFrame,
+    allele_infos: str,
+    data_type: str,
+    min_allele_counts: int,
+    min_total_counts: int,
+    min_total_thres: int,
+    min_allele_thres: int,
+    out_dir: str,
+    tmp_dir: str,
+):
+    adata: AnnData = sc.read_h5ad(h5ad_file)
+    print(adata)
+    print(adata.var.head(3))
+
+    cell_snps, dp_mat, ref_mat, alt_mat = allele_infos[data_type]
+    adata, cell_snps, super_features = consolidate_snp_feature(
+        adata,
+        cell_snps,
+        haplo_blocks,
+        tmp_dir,
+        data_type,
+        feature_may_overlap=True,
+    )
+
+    adata, cell_snps, bins = co_binning_allele_feature(
+        adata,
+        cell_snps,
+        super_features,
+        haplo_blocks,
+        min_allele_counts,
+        min_total_counts,
+        min_total_thres,
+        min_allele_thres,
+    )
+
+    aggregate_allele_counts(
+        bins,
+        cell_snps,
+        dp_mat,
+        alt_mat,
+        data_type,
+        out_dir,
+    )
+
+    aggregate_var_counts(bins, adata, data_type, out_dir)
+
+    bins.to_csv(
+        os.path.join(out_dir, "bin_information.tsv"),
+        columns=[
+            "BIN_ID",
+            "#CHR",
+            "START",
+            "END",
+            "HB",
+            "CNP",
+            "#VAR",
+            "VAR_DP",
+            "ALLELE_DP",
+            "B_ALLELE_DP",
+        ],
+        sep="\t",
+        header=True,
+        index=False,
+    )
+    return
+
 
 if __name__ == "__main__":
     args = parse_arguments_preprocess()
+
+    phase_method = "iid-map"
+    phase_mode = "bulk"
 
     min_allele_counts_ps = 5000
     trust_PS = True
@@ -30,6 +103,8 @@ if __name__ == "__main__":
 
     min_allele_counts_visium = 5000
     min_total_counts_visium = 5000
+    min_total_thres_visium = 500
+    min_allele_thres_visium = 500
 
     modality = args["modality"]
     sample = args["sample"]
@@ -41,38 +116,14 @@ if __name__ == "__main__":
     os.makedirs(tmp_dir, exist_ok=True)
 
     ##################################################
-    # preprocess HATCHet inputs
-    seg_ucn = args["seg_ucn"]
-    vcf_file = args["vcf_file"]
-    if args["allele_dir"]:
-        hatchet_files = [args["allele_dir"]]
-        hatchet_version = "new"
-    else:
-        hatchet_files = [args["tumor_1bed"]]
-        hatchet_version = "old"
-
-    haplo_block_file = os.path.join(prep_dir, "haplotype_blocks.tsv")
-    snp_info_file = os.path.join(prep_dir, "snp_information.tsv.gz")
-    if os.path.exists(haplo_block_file) and os.path.exists(snp_info_file):
-        print("load existing prep-ed haplotype block and snp files")
-        haplo_blocks = pd.read_table(haplo_block_file, sep="\t", index_col=None)
-        snp_info = pd.read_table(snp_info_file, sep="\t", index_col=None)
-    else:
-        haplo_blocks, snp_info = load_input_HATCHet(
-            seg_ucn,
-            vcf_file,
-            hatchet_version,
-            hatchet_files,
-            trust_PS,
-            min_allele_counts_ps,
-            prep_dir,
-            verbose=True,
-        )
+    # load HATCHet copy-number profile
+    segs, cnv_Aallele, cnv_Ballele, cnv_mixBAF, clone_props = format_cnv_profile(
+        args["seg_ucn"]
+    )
 
     ##################################################
-    # preprocess 10x inputs
+    # load barcode file
     barcode_file = args["barcodes"]
-    ranger_dir = args["ranger_dir"]
     celltype_file = args["celltype_file"]
 
     barcodes = read_barcodes(barcode_file)
@@ -88,151 +139,150 @@ if __name__ == "__main__":
         barcodes_df["cell_type"] = (
             barcodes_df["cell_type"].fillna(value="Unknown").astype(str)
         )
+    if modality == "visium":
+        barcodes_df["BARCODE_RAW"] = barcodes_df["BARCODE"]
+        if "_" in barcodes[0]:
+            barcodes_df[["BARCODE", "SLICE"]] = barcodes_df["BARCODE_RAW"].str.split(
+                "_", n=1, expand=True
+            )
+        else:
+            barcodes_df["SLICE"] = "U1"
+        num_slices = len(barcodes_df["SLICE"].unique())
+        print(f"#slices={num_slices}")
 
     barcodes_df.to_csv(
         os.path.join(prep_dir, "Barcodes.tsv"), sep="\t", index=False, header=True
     )
 
+    ##################################################
+    # load allele informations per data type
+    allele_infos = {}
+    data_types = []
     if modality == "multiome":
-        ##################################################
+        data_types = ["GEX", "ATAC"]
+        # scRNA-seq, load from cellsnp-lite
+        # rna_cell_snps, rna_dp_mat, rna_ref_mat, rna_alt_mat
+        allele_infos["GEX"] = load_cellsnp_files(args["cellsnp_dir_1"], None, barcodes)
+        # scATAC-seq, load from cellsnp-lite
+        # atac_cell_snps, atac_dp_mat, atac_ref_mat, atac_alt_mat
+        allele_infos["ATAC"] = load_cellsnp_files(args["cellsnp_dir_2"], None, barcodes)
+    elif modality == "visium":
+        allele_infos["visium"] = load_calicost_prep_data(
+            args["calicoST_prep_dir"], barcodes
+        )
+    else:
+        raise ValueError()
+
+    ##################################################
+    # phase SNPs and build haplotype blocks. shared across modalities
+    # SNPs can be thrown in this step
+    haplo_blocks = None
+    snp_info = None
+    haplo_block_file = os.path.join(prep_dir, "haplotype_blocks.tsv")
+    snp_info_file = os.path.join(prep_dir, "snp_information.tsv.gz")
+    if os.path.exists(haplo_block_file) and os.path.exists(snp_info_file):
+        print("load existing prep-ed haplotype block and snp files")
+        haplo_blocks = pd.read_table(haplo_block_file, sep="\t", index_col=None)
+        snp_info = pd.read_table(snp_info_file, sep="\t", index_col=None)
+    else:
+        if phase_mode == "bulk":
+            print("phase using bulk information")
+            phased_snps = read_VCF(args["vcf_file"], phased=True)
+            if args["allele_dir"]:
+                snp_info, allele_counts, ref_counts, alt_counts = load_snps_HATCHet_new(
+                    phased_snps, [args["allele_dir"]]
+                )
+            else:
+                assert not args["tumor_1bed"] is None
+                snp_info, allele_counts, ref_counts, alt_counts = load_snps_HATCHet_old(
+                    phased_snps, [args["tumor_1bed"]]
+                )
+        else:
+            print("phase using pseudobulk information")
+            snp_info, allele_counts, ref_counts, alt_counts = load_snps_pseudobulk(
+                allele_infos, modality
+            )
+
+        snp_info, allele_counts, ref_counts, alt_counts = annotate_snps(
+            segs, snp_info, allele_counts, ref_counts, alt_counts
+        )
+        haplo_blocks, snp_info = construct_phase_blocks(
+            segs,
+            cnv_mixBAF,
+            snp_info,
+            ref_counts,
+            alt_counts,
+            phase_method=phase_method,
+            trust_PS=trust_PS,
+            min_allele_counts=min_allele_counts_ps,
+            verbose=True,
+        )
+        print(f"save phased blocks")
+        haplo_blocks.to_csv(
+            os.path.join(prep_dir, "haplotype_blocks.tsv"),
+            header=True,
+            sep="\t",
+            index=False,
+        )
+        snp_info.to_csv(
+            os.path.join(prep_dir, "snp_information.tsv.gz"),
+            header=True,
+            sep="\t",
+            index=False,
+        )
+
+    allele_infos = annotate_snps_post(snp_info, allele_infos)
+
+    ##################################################
+    # preprocess 10x inputs, binning independently per modality
+    if modality == "multiome":
         print("process gene expression data")
         gex_dir = os.path.join(prep_dir, "GEX")
         os.makedirs(gex_dir, exist_ok=True)
-        rna_adata = sc.read_h5ad(args["rna_h5ad"])
-        print(rna_adata)
-        print(rna_adata.var.head(3))
-
-        rna_bc_idxs, rna_cell_snps, rna_dp_mtx, rna_ad_mtx = load_cellsnp_files(
-            args["cellsnp_dir_1"], snp_info, barcodes
-        )
-        rna_adata, rna_cell_snps, rna_super_features = consolidate_snp_feature(
-            rna_adata,
-            rna_cell_snps,
+        wrapper_single_data_type(
+            args["rna_h5ad"],
             haplo_blocks,
-            tmp_dir,
+            allele_infos,
             "GEX",
-            feature_may_overlap=True,
-        )
-
-        rna_super_features = stat_pseudobulk(
-            rna_adata, rna_cell_snps, rna_super_features
-        )
-
-        rna_adata, rna_cell_snps, rna_bins = co_binning_allele_feature(
-            rna_adata,
-            rna_cell_snps,
-            rna_super_features,
-            haplo_blocks,
             min_allele_counts_rna,
             min_total_counts_rna,
             min_total_thres_rna,
             min_allele_thres_rna,
-        )
-
-        aggregate_allele_counts(
-            rna_bins,
-            rna_bc_idxs,
-            rna_cell_snps,
-            rna_dp_mtx,
-            rna_ad_mtx,
-            "GEX",
             gex_dir,
+            tmp_dir,
         )
 
-        aggregate_var_counts(rna_bins, rna_adata, "GEX", gex_dir)
-
-        rna_bins.to_csv(
-            os.path.join(gex_dir, "bin_information.tsv"),
-            columns=[
-                "BIN_ID",
-                "#CHR",
-                "START",
-                "END",
-                "HB",
-                "CNP",
-                "#VAR",
-                "VAR_DP",
-                "ALLELE_DP",
-                "B_ALLELE_DP",
-            ],
-            sep="\t",
-            header=True,
-            index=False,
-        )
-
-        ##################################################
-        # handle scATAC-seq data
+        print("process chromatin accessibility data")
         atac_dir = os.path.join(prep_dir, "ATAC")
         os.makedirs(atac_dir, exist_ok=True)
-        atac_adata = sc.read_h5ad(args["atac_h5ad"])
-        print(atac_adata)
-        print(atac_adata.var.head(3))
-
-        atac_bc_idxs, atac_cell_snps, atac_dp_mtx, atac_ad_mtx = load_cellsnp_files(
-            args["cellsnp_dir_2"], snp_info, barcodes
-        )
-        atac_adata, atac_cell_snps, atac_super_features = consolidate_snp_feature(
-            atac_adata,
-            atac_cell_snps,
+        wrapper_single_data_type(
+            args["atac_h5ad"],
             haplo_blocks,
-            tmp_dir,
+            allele_infos,
             "ATAC",
-            feature_may_overlap=False,
-        )
-
-        atac_super_features = stat_pseudobulk(
-            atac_adata, atac_cell_snps, atac_super_features
-        )
-
-        atac_adata, atac_cell_snps, atac_bins = co_binning_allele_feature(
-            atac_adata,
-            atac_cell_snps,
-            atac_super_features,
-            haplo_blocks,
             min_allele_counts_atac,
             min_total_counts_atac,
             min_total_thres_atac,
             min_allele_thres_atac,
-        )
-
-        aggregate_allele_counts(
-            atac_bins,
-            atac_bc_idxs,
-            atac_cell_snps,
-            atac_dp_mtx,
-            atac_ad_mtx,
-            "ATAC",
             atac_dir,
-        )
-
-        aggregate_var_counts(atac_bins, atac_adata, "ATAC", atac_dir)
-
-        atac_bins.to_csv(
-            os.path.join(atac_dir, "bin_information.tsv"),
-            columns=[
-                "BIN_ID",
-                "#CHR",
-                "START",
-                "END",
-                "HB",
-                "CNP",
-                "#VAR",
-                "VAR_DP",
-                "ALLELE_DP",
-                "B_ALLELE_DP",
-            ],
-            sep="\t",
-            header=True,
-            index=False,
+            tmp_dir,
         )
     elif modality == "visium":
-        ##################################################
-        adata = sc.read_h5ad(args["rna_h5ad"])
-        # adata = load_input_10x(ranger_dir, barcodes, annotation_file, modality=modality)
-
-        # spatial coordinates TODO
-        pass
-
+        print("process spatial spot-level gene expression data")
+        gex_dir = os.path.join(prep_dir, "visium")
+        os.makedirs(gex_dir, exist_ok=True)
+        wrapper_single_data_type(
+            args["rna_h5ad"],
+            haplo_blocks,
+            allele_infos,
+            "visium",
+            min_allele_counts_visium,
+            min_total_counts_visium,
+            min_total_thres_visium,
+            min_allele_thres_visium,
+            gex_dir,
+            tmp_dir,
+        )
     else:
         # TODO
         pass

@@ -172,7 +172,7 @@ def read_VCF_cellsnp_err_header(vcf_file: str):
         for field in info_str.split(";"):
             if field.startswith(f"{key}="):
                 return int(field.split("=")[1])
-        raise ValueError("nan-DP field")
+        return pd.NA
 
     snps["DP"] = snps["INFO"].apply(lambda x: extract_info_field(x, "DP"))
     snps = snps.drop(columns="INFO")

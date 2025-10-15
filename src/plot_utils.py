@@ -136,7 +136,6 @@ def plot_rdr_1d(
     **kwargs
 ):
     bin_info = sx_data.bin_info
-    # rdr_matrix = sx_data.T.T
     rdr_matrix = (sx_data.T / (base_props[:, None] @ sx_data.Tn[None, :])).T
     if mask_cnp:
         cnp_mask = sx_data.ALL_MASK[mask_id]
