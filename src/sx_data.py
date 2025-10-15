@@ -6,8 +6,8 @@ import pandas as pd
 
 from utils import *
 
-from prep_io_utils import *
-
+from io_utils import *
+from copytyping_utils import *
 
 class SX_Data:
     def __init__(self, nbarcodes: int, prep_dir: str, data_type: str) -> None:

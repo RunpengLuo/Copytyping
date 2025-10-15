@@ -15,13 +15,6 @@ from scipy import sparse
 from utils import *
 from external import *
 
-
-def load_bin_information(mod_dir: str, modality: str):
-    bin_info_file = os.path.join(mod_dir, "bin_information.tsv")
-    df = pd.read_table(bin_info_file, sep="\t")
-    return df
-
-
 def parse_cnp(bin_info: pd.DataFrame, laplace=0.01):
     num_clones = len(str(bin_info["CNP"].iloc[0]).split(";"))
     clones = ["normal"] + [f"clone{i}" for i in range(1, num_clones)]
@@ -69,36 +62,3 @@ def get_cnp_mask(A, B, C, BAF, and_mask=None):
             "SUBCLONAL": subclonal_mask,
             "CLONAL_LOH": clonal_loh_mask,
             "NEUTRAL": neutral_mask}
-
-
-def load_allele_input(mod_dir: str, modality: str):
-    bin_Aallele_file = os.path.join(mod_dir, "Aallele.npz")
-    bin_Ballele_file = os.path.join(mod_dir, "Ballele.npz")
-    bin_Tallele_file = os.path.join(mod_dir, "Tallele.npz")
-    bin_nSNP_file = os.path.join(mod_dir, "n_snps.npz")
-
-    a_allele_mat: np.ndarray = (
-        sparse.load_npz(bin_Aallele_file).toarray().astype(dtype=np.int32)
-    )
-    b_allele_mat: np.ndarray = (
-        sparse.load_npz(bin_Ballele_file).toarray().astype(dtype=np.int32)
-    )
-    t_allele_mat: np.ndarray = (
-        sparse.load_npz(bin_Tallele_file).toarray().astype(dtype=np.int32)
-    )
-    snp_count_mat: np.ndarray = (
-        sparse.load_npz(bin_nSNP_file).toarray().astype(dtype=np.int32)
-    )
-    return a_allele_mat, b_allele_mat, t_allele_mat, snp_count_mat
-
-
-def load_count_input(mod_dir: str, modality: str):
-    bin_count_file = os.path.join(mod_dir, f"count.npz")
-    bin_count_mat: np.ndarray = (
-        sparse.load_npz(bin_count_file).toarray().astype(dtype=np.int32)
-    )
-    return bin_count_mat
-
-
-def load_spatial_coordinates(coord_file: str):
-    pass

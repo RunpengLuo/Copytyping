@@ -9,7 +9,8 @@ import scanpy as sc
 
 from parsing import parse_arguments_preprocess
 from utils import *
-from raw_io_utils import *
+from io_utils import *
+from preprocess_utils import *
 from snp_phaser import construct_phase_blocks
 
 
@@ -232,6 +233,8 @@ if __name__ == "__main__":
         )
 
     allele_infos = annotate_snps_post(snp_info, allele_infos)
+
+    # TODO we can access phasing accuracy here?
 
     ##################################################
     # preprocess 10x inputs, binning independently per modality
